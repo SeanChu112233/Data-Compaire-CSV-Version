@@ -69,7 +69,7 @@ def generate_time_series_plot(df_list, file_names, param_name, x_col, time_range
     ax.set_ylim(y_range[0], y_range[1])
     
     # 设置图表样式
-    ax.set_title(f'{param_name} 多文件时间序列对比（时间：{time_range[0]} ~ {time_range[1]} | 数值：{y_range[0]} ~ {y_range[1]}）', fontsize=14, pad=20)
+    ax.set_title(f'{param_name} 多文件时间序列对比（时间：{time_range[0]:.2f} ~ {time_range[1]:.2f} | 数值：{y_range[0]:.2f} ~ {y_range[1]:.2f}）', fontsize=14, pad=20)
     ax.set_xlabel(x_col, fontsize=12)
     ax.set_ylabel(param_name, fontsize=12)
     ax.grid(True, linestyle='--', alpha=0.6)
@@ -85,7 +85,8 @@ def get_download_link(fig, param_name, time_range, y_range, format='png'):
     fig.savefig(buf, format=format, dpi=300, bbox_inches='tight')
     buf.seek(0)
     b64 = base64.b64encode(buf.getvalue()).decode()
-    filename = f"{param_name}_对比图_时间{time_range[0]}-{time_range[1]}_数值{y_range[0]}-{y_range[1]}"
+    # 文件名简化，避免特殊字符问题
+    filename = f"{param_name}_对比图_时间{time_range[0]:.0f}-{time_range[1]:.0f}_数值{y_range[0]:.0f}-{y_range[1]:.0f}"
     return f'<a href="data:image/{format};base64,{b64}" download="{filename}.{format}">下载{param_name}对比图</a>'
 
 def main():
@@ -93,18 +94,6 @@ def main():
     st.title("多CSV文件参数时间序列对比工具")
     st.markdown("### 上传说明")
     st.write("请上传**列名完全一致**的多个CSV文件，第一列默认为时间轴（X轴），其余列为对比参数")
-    
-    # 初始化session state（用更稳定的方式实现复位）
-    if 'reset_time' not in st.session_state:
-        st.session_state.reset_time = False
-    if 'reset_y' not in st.session_state:
-        st.session_state.reset_y = False
-    if 'default_time_range' not in st.session_state:
-        st.session_state.default_time_range = (0, 0)
-    if 'default_y_range' not in st.session_state:
-        st.session_state.default_y_range = (0, 0)
-    if 'current_param' not in st.session_state:
-        st.session_state.current_param = ""
     
     # 1. 多文件上传
     uploaded_files = st.file_uploader(
@@ -147,21 +136,19 @@ def main():
         st.error("文件仅包含一列数据，无可用对比参数")
         return
     
-    # 处理参数选择和复位联动
     selected_param = st.selectbox(
         "选择要对比的参数",
         options=param_options,
-        index=0 if st.session_state.current_param == "" else param_options.index(st.session_state.current_param),
+        index=0,
         help="选择需要绘制时间序列的参数"
     )
-    st.session_state.current_param = selected_param
     
-    # 5. 时间区间选择（修复复位功能）
+    # 5. 时间区间选择（极简实现，无复杂Session State绑定）
     st.markdown("---")
     st.subheader("时间区间筛选")
     x_col = first_columns[0]  # 第一列作为X轴（时间列）
     
-    # 获取所有文件的时间范围，作为默认值
+    # 获取所有文件的时间范围
     all_x_values = []
     for df in df_list:
         if x_col in df.columns:
@@ -171,43 +158,35 @@ def main():
         st.error("无法获取时间轴数据，请检查文件中是否有有效时间列")
         return
     
-    min_x = min(all_x_values)
-    max_x = max(all_x_values)
-    st.session_state.default_time_range = (min_x, max_x)
+    min_x = float(min(all_x_values))
+    max_x = float(max(all_x_values))
     
-    # 时间区间布局：起始时间 + 结束时间 + 复位按钮
-    col1, col2, col3 = st.columns([2, 2, 1])
-    with col1:
-        # 根据复位状态设置默认值
-        time_start_value = float(min_x) if st.session_state.reset_time else st.session_state.get('time_start', float(min_x))
-        start_time = st.number_input(
-            "起始时间",
-            value=time_start_value,
-            min_value=float(min_x),
-            max_value=float(max_x),
-            step=0.1 if isinstance(min_x, float) else 1,
-            key="time_start"
-        )
-    with col2:
-        time_end_value = float(max_x) if st.session_state.reset_time else st.session_state.get('time_end', float(max_x))
-        end_time = st.number_input(
-            "结束时间",
-            value=time_end_value,
-            min_value=float(min_x),
-            max_value=float(max_x),
-            step=0.1 if isinstance(min_x, float) else 1,
-            key="time_end"
-        )
-    with col3:
-        # 复位按钮：仅修改session state，不触发rerun
-        if st.button("🔄 复位时间", type="secondary"):
-            st.session_state.reset_time = True
-            st.session_state.time_start = float(min_x)
-            st.session_state.time_end = float(max_x)
-        else:
-            # 非点击状态时重置复位标记
-            if st.session_state.reset_time:
-                st.session_state.reset_time = False
+    # 时间区间布局：用容器包裹，避免状态冲突
+    with st.container():
+        col1, col2, col3 = st.columns([3, 3, 1])
+        with col1:
+            start_time = st.number_input(
+                "起始时间",
+                value=min_x,
+                min_value=min_x,
+                max_value=max_x,
+                step=0.1 if (max_x - min_x) < 100 else 1.0,
+                format="%.2f"
+            )
+        with col2:
+            end_time = st.number_input(
+                "结束时间",
+                value=max_x,
+                min_value=min_x,
+                max_value=max_x,
+                step=0.1 if (max_x - min_x) < 100 else 1.0,
+                format="%.2f"
+            )
+        with col3:
+            # 复位按钮：直接重置输入框值（通过重新赋值实现）
+            if st.button("🔄 复位时间", type="secondary"):
+                start_time = min_x
+                end_time = max_x
     
     # 验证时间区间有效性
     if start_time > end_time:
@@ -215,11 +194,11 @@ def main():
         return
     time_range = (start_time, end_time)
     
-    # 6. 纵坐标区间选择（修复复位功能）
+    # 6. 纵坐标区间选择（同样极简实现）
     st.markdown("---")
     st.subheader("纵坐标（参数值）区间筛选")
     
-    # 获取当前选中参数的全局数值范围
+    # 获取当前选中参数的数值范围（当前时间区间内）
     all_y_values = []
     for df in df_list:
         if selected_param in df.columns:
@@ -227,49 +206,41 @@ def main():
             all_y_values.extend(df_time_filtered[selected_param].dropna().values)
     
     if not all_y_values:
-        st.warning("当前时间区间内无有效参数值，无法设置纵坐标范围")
+        st.warning("当前时间区间内无有效参数值，请调整时间范围")
         return
     
-    min_y = min(all_y_values)
-    max_y = max(all_y_values)
-    # 扩展10%的范围作为默认值
-    default_y_min = min_y - (max_y - min_y) * 0.1 if max_y != min_y else min_y - 1
-    default_y_max = max_y + (max_y - min_y) * 0.1 if max_y != min_y else max_y + 1
-    st.session_state.default_y_range = (default_y_min, default_y_max)
+    min_y = float(min(all_y_values))
+    max_y = float(max(all_y_values))
+    # 扩展10%作为默认范围
+    default_y_min = min_y - (max_y - min_y) * 0.1 if max_y != min_y else min_y - 1.0
+    default_y_max = max_y + (max_y - min_y) * 0.1 if max_y != min_y else max_y + 1.0
     
-    # 纵坐标区间布局：最小值 + 最大值 + 复位按钮
-    col4, col5, col6 = st.columns([2, 2, 1])
-    with col4:
-        # 根据复位状态设置默认值
-        y_min_value = float(default_y_min) if st.session_state.reset_y else st.session_state.get('y_min', float(default_y_min))
-        y_min = st.number_input(
-            "数值最小值",
-            value=y_min_value,
-            min_value=float(min_y - (max_y - min_y) * 1) if max_y != min_y else min_y - 10,
-            max_value=float(max_y),
-            step=0.01 if isinstance(default_y_min, float) else 1,
-            key="y_min"
-        )
-    with col5:
-        y_max_value = float(default_y_max) if st.session_state.reset_y else st.session_state.get('y_max', float(default_y_max))
-        y_max = st.number_input(
-            "数值最大值",
-            value=y_max_value,
-            min_value=float(min_y),
-            max_value=float(max_y + (max_y - min_y) * 1) if max_y != min_y else max_y + 10,
-            step=0.01 if isinstance(default_y_max, float) else 1,
-            key="y_max"
-        )
-    with col6:
-        # 复位按钮：仅修改session state，不触发rerun
-        if st.button("🔄 复位数值", type="secondary"):
-            st.session_state.reset_y = True
-            st.session_state.y_min = float(default_y_min)
-            st.session_state.y_max = float(default_y_max)
-        else:
-            # 非点击状态时重置复位标记
-            if st.session_state.reset_y:
-                st.session_state.reset_y = False
+    # 纵坐标区间布局
+    with st.container():
+        col4, col5, col6 = st.columns([3, 3, 1])
+        with col4:
+            y_min = st.number_input(
+                "数值最小值",
+                value=default_y_min,
+                min_value=min_y - (max_y - min_y) * 1.0 if max_y != min_y else min_y - 10.0,
+                max_value=max_y,
+                step=0.01 if (max_y - min_y) < 10 else 0.1,
+                format="%.2f"
+            )
+        with col5:
+            y_max = st.number_input(
+                "数值最大值",
+                value=default_y_max,
+                min_value=min_y,
+                max_value=max_y + (max_y - min_y) * 1.0 if max_y != min_y else max_y + 10.0,
+                step=0.01 if (max_y - min_y) < 10 else 0.1,
+                format="%.2f"
+            )
+        with col6:
+            # 复位数值按钮
+            if st.button("🔄 复位数值", type="secondary"):
+                y_min = default_y_min
+                y_max = default_y_max
     
     # 验证纵坐标区间有效性
     if y_min >= y_max:
@@ -281,9 +252,7 @@ def main():
     st.markdown("---")
     st.subheader("对比图表")
     fig = generate_time_series_plot(df_list, file_names, selected_param, x_col, time_range, y_range)
-    
-    # 显示图表
-    st.pyplot(fig)
+    st.pyplot(fig, use_container_width=True)
     
     # 8. 下载链接
     st.markdown(get_download_link(fig, selected_param, time_range, y_range), unsafe_allow_html=True)
@@ -294,7 +263,6 @@ def main():
     tab_list = st.tabs(file_names)
     for idx, tab in enumerate(tab_list):
         with tab:
-            # 同时筛选时间和数值区间的数据
             df_filtered = df_list[idx][
                 (df_list[idx][x_col] >= time_range[0]) & 
                 (df_list[idx][x_col] <= time_range[1]) &
