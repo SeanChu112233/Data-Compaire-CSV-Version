@@ -28,13 +28,14 @@ def load_csv_file(uploaded_file):
     st.error(f"文件 {uploaded_file.name} 编码格式不支持，请检查文件")
     return None
 
-def generate_time_series_plot(df_list, file_names, param_name, x_col):
+def generate_time_series_plot(df_list, file_names, param_name, x_col, time_range):
     """
-    生成指定参数的时间序列对比图
+    生成指定参数的时间序列对比图（支持时间区间筛选）
     :param df_list: 数据框列表
     :param file_names: 文件名列表
     :param param_name: 要对比的参数名
     :param x_col: X轴列名（时间列）
+    :param time_range: 时间区间 (start, end)
     :return: matplotlib figure对象
     """
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -46,8 +47,14 @@ def generate_time_series_plot(df_list, file_names, param_name, x_col):
             st.warning(f"文件 {file_name} 缺少 {x_col} 或 {param_name} 列，跳过该文件")
             continue
         
-        x_data = df[x_col].values
-        y_data = df[param_name].values
+        # 筛选指定时间区间的数据
+        df_filtered = df[(df[x_col] >= time_range[0]) & (df[x_col] <= time_range[1])]
+        if df_filtered.empty:
+            st.warning(f"文件 {file_name} 在 [{time_range[0]}, {time_range[1]}] 区间内无数据")
+            continue
+        
+        x_data = df_filtered[x_col].values
+        y_data = df_filtered[param_name].values
         
         # 绘制曲线（使用固定颜色，超出默认颜色则循环）
         color = DEFAULT_COLORS[idx % len(DEFAULT_COLORS)]
@@ -58,7 +65,7 @@ def generate_time_series_plot(df_list, file_names, param_name, x_col):
                 alpha=0.8)
     
     # 设置图表样式
-    ax.set_title(f'{param_name} 多文件时间序列对比', fontsize=14, pad=20)
+    ax.set_title(f'{param_name} 多文件时间序列对比（{time_range[0]} ~ {time_range[1]}）', fontsize=14, pad=20)
     ax.set_xlabel(x_col, fontsize=12)
     ax.set_ylabel(param_name, fontsize=12)
     ax.grid(True, linestyle='--', alpha=0.6)
@@ -68,13 +75,14 @@ def generate_time_series_plot(df_list, file_names, param_name, x_col):
     plt.tight_layout()
     return fig
 
-def get_download_link(fig, param_name, format='png'):
-    """生成图表下载链接"""
+def get_download_link(fig, param_name, time_range, format='png'):
+    """生成图表下载链接（包含时间区间信息）"""
     buf = BytesIO()
     fig.savefig(buf, format=format, dpi=300, bbox_inches='tight')
     buf.seek(0)
     b64 = base64.b64encode(buf.getvalue()).decode()
-    return f'<a href="data:image/{format};base64,{b64}" download="{param_name}_对比图.{format}">下载{param_name}对比图</a>'
+    filename = f"{param_name}_对比图_{time_range[0]}_{time_range[1]}"
+    return f'<a href="data:image/{format};base64,{b64}" download="{filename}.{format}">下载{param_name}对比图</a>'
 
 def main():
     st.set_page_config(page_title="多CSV时间序列对比", layout="wide")
@@ -130,25 +138,69 @@ def main():
         help="选择需要绘制时间序列的参数"
     )
     
-    # 5. 生成并显示图表
+    # 5. 时间区间选择（核心新增功能）
+    st.markdown("---")
+    st.subheader("时间区间筛选")
+    x_col = first_columns[0]  # 第一列作为X轴（时间列）
+    
+    # 获取所有文件的时间范围，作为默认值
+    all_x_values = []
+    for df in df_list:
+        if x_col in df.columns:
+            all_x_values.extend(df[x_col].dropna().values)
+    
+    if all_x_values:
+        min_x = min(all_x_values)
+        max_x = max(all_x_values)
+        
+        # 时间区间输入框
+        col1, col2 = st.columns(2)
+        with col1:
+            start_time = st.number_input(
+                "起始时间",
+                value=float(min_x),
+                min_value=float(min_x),
+                max_value=float(max_x),
+                step=0.1 if isinstance(min_x, float) else 1
+            )
+        with col2:
+            end_time = st.number_input(
+                "结束时间",
+                value=float(max_x),
+                min_value=float(min_x),
+                max_value=float(max_x),
+                step=0.1 if isinstance(min_x, float) else 1
+            )
+        
+        # 验证时间区间有效性
+        if start_time > end_time:
+            st.error("起始时间不能大于结束时间，请重新设置")
+            return
+        time_range = (start_time, end_time)
+    else:
+        st.error("无法获取时间轴数据，请检查文件中是否有有效时间列")
+        return
+    
+    # 6. 生成并显示图表
     st.markdown("---")
     st.subheader("对比图表")
-    x_col = first_columns[0]  # 第一列作为X轴（时间列）
-    fig = generate_time_series_plot(df_list, file_names, selected_param, x_col)
+    fig = generate_time_series_plot(df_list, file_names, selected_param, x_col, time_range)
     
     # 显示图表
     st.pyplot(fig)
     
-    # 6. 下载链接
-    st.markdown(get_download_link(fig, selected_param), unsafe_allow_html=True)
+    # 7. 下载链接
+    st.markdown(get_download_link(fig, selected_param, time_range), unsafe_allow_html=True)
     
-    # 7. 数据预览
+    # 8. 数据预览（筛选后的数据）
     st.markdown("---")
-    st.subheader("数据预览")
+    st.subheader("数据预览（当前时间区间）")
     tab_list = st.tabs(file_names)
     for idx, tab in enumerate(tab_list):
         with tab:
-            st.dataframe(df_list[idx], use_container_width=True)
+            # 显示筛选后的数据
+            df_filtered = df_list[idx][(df_list[idx][x_col] >= time_range[0]) & (df_list[idx][x_col] <= time_range[1])]
+            st.dataframe(df_filtered, use_container_width=True)
 
 if __name__ == "__main__":
     main()
