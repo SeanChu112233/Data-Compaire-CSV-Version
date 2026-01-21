@@ -28,14 +28,15 @@ def load_csv_file(uploaded_file):
     st.error(f"文件 {uploaded_file.name} 编码格式不支持，请检查文件")
     return None
 
-def generate_time_series_plot(df_list, file_names, param_name, x_col, time_range):
+def generate_time_series_plot(df_list, file_names, param_name, x_col, time_range, y_range):
     """
-    生成指定参数的时间序列对比图（支持时间区间筛选）
+    生成指定参数的时间序列对比图（支持时间区间+纵坐标区间筛选）
     :param df_list: 数据框列表
     :param file_names: 文件名列表
     :param param_name: 要对比的参数名
     :param x_col: X轴列名（时间列）
     :param time_range: 时间区间 (start, end)
+    :param y_range: 纵坐标区间 (y_min, y_max)
     :return: matplotlib figure对象
     """
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -64,8 +65,11 @@ def generate_time_series_plot(df_list, file_names, param_name, x_col, time_range
                 linewidth=2,
                 alpha=0.8)
     
+    # 设置纵坐标范围
+    ax.set_ylim(y_range[0], y_range[1])
+    
     # 设置图表样式
-    ax.set_title(f'{param_name} 多文件时间序列对比（{time_range[0]} ~ {time_range[1]}）', fontsize=14, pad=20)
+    ax.set_title(f'{param_name} 多文件时间序列对比（时间：{time_range[0]} ~ {time_range[1]} | 数值：{y_range[0]} ~ {y_range[1]}）', fontsize=14, pad=20)
     ax.set_xlabel(x_col, fontsize=12)
     ax.set_ylabel(param_name, fontsize=12)
     ax.grid(True, linestyle='--', alpha=0.6)
@@ -75,13 +79,13 @@ def generate_time_series_plot(df_list, file_names, param_name, x_col, time_range
     plt.tight_layout()
     return fig
 
-def get_download_link(fig, param_name, time_range, format='png'):
-    """生成图表下载链接（包含时间区间信息）"""
+def get_download_link(fig, param_name, time_range, y_range, format='png'):
+    """生成图表下载链接（包含时间区间和纵坐标区间信息）"""
     buf = BytesIO()
     fig.savefig(buf, format=format, dpi=300, bbox_inches='tight')
     buf.seek(0)
     b64 = base64.b64encode(buf.getvalue()).decode()
-    filename = f"{param_name}_对比图_{time_range[0]}_{time_range[1]}"
+    filename = f"{param_name}_对比图_时间{time_range[0]}-{time_range[1]}_数值{y_range[0]}-{y_range[1]}"
     return f'<a href="data:image/{format};base64,{b64}" download="{filename}.{format}">下载{param_name}对比图</a>'
 
 def main():
@@ -89,6 +93,12 @@ def main():
     st.title("多CSV文件参数时间序列对比工具")
     st.markdown("### 上传说明")
     st.write("请上传**列名完全一致**的多个CSV文件，第一列默认为时间轴（X轴），其余列为对比参数")
+    
+    # 初始化session state存储默认范围（用于复位）
+    if 'default_time_range' not in st.session_state:
+        st.session_state.default_time_range = (0, 0)
+    if 'default_y_range' not in st.session_state:
+        st.session_state.default_y_range = (0, 0)
     
     # 1. 多文件上传
     uploaded_files = st.file_uploader(
@@ -138,7 +148,7 @@ def main():
         help="选择需要绘制时间序列的参数"
     )
     
-    # 5. 时间区间选择（核心新增功能）
+    # 5. 时间区间选择（含复位按钮）
     st.markdown("---")
     st.subheader("时间区间筛选")
     x_col = first_columns[0]  # 第一列作为X轴（时间列）
@@ -149,57 +159,117 @@ def main():
         if x_col in df.columns:
             all_x_values.extend(df[x_col].dropna().values)
     
-    if all_x_values:
-        min_x = min(all_x_values)
-        max_x = max(all_x_values)
-        
-        # 时间区间输入框
-        col1, col2 = st.columns(2)
-        with col1:
-            start_time = st.number_input(
-                "起始时间",
-                value=float(min_x),
-                min_value=float(min_x),
-                max_value=float(max_x),
-                step=0.1 if isinstance(min_x, float) else 1
-            )
-        with col2:
-            end_time = st.number_input(
-                "结束时间",
-                value=float(max_x),
-                min_value=float(min_x),
-                max_value=float(max_x),
-                step=0.1 if isinstance(min_x, float) else 1
-            )
-        
-        # 验证时间区间有效性
-        if start_time > end_time:
-            st.error("起始时间不能大于结束时间，请重新设置")
-            return
-        time_range = (start_time, end_time)
-    else:
+    if not all_x_values:
         st.error("无法获取时间轴数据，请检查文件中是否有有效时间列")
         return
     
-    # 6. 生成并显示图表
+    min_x = min(all_x_values)
+    max_x = max(all_x_values)
+    st.session_state.default_time_range = (min_x, max_x)
+    
+    # 时间区间布局：起始时间 + 结束时间 + 复位按钮
+    col1, col2, col3 = st.columns([2, 2, 1])
+    with col1:
+        start_time = st.number_input(
+            "起始时间",
+            value=float(min_x),
+            min_value=float(min_x),
+            max_value=float(max_x),
+            step=0.1 if isinstance(min_x, float) else 1
+        )
+    with col2:
+        end_time = st.number_input(
+            "结束时间",
+            value=float(max_x),
+            min_value=float(min_x),
+            max_value=float(max_x),
+            step=0.1 if isinstance(min_x, float) else 1
+        )
+    with col3:
+        if st.button("🔄 复位时间", type="secondary"):
+            st.experimental_rerun()
+    
+    # 验证时间区间有效性
+    if start_time > end_time:
+        st.error("起始时间不能大于结束时间，请重新设置")
+        return
+    time_range = (start_time, end_time)
+    
+    # 6. 纵坐标区间选择（核心新增功能，含复位按钮）
+    st.markdown("---")
+    st.subheader("纵坐标（参数值）区间筛选")
+    
+    # 获取当前选中参数的全局数值范围（所有文件+所有时间）
+    all_y_values = []
+    for df in df_list:
+        if selected_param in df.columns:
+            # 先筛选时间区间内的数据，再获取数值范围（避免无效数据影响）
+            df_time_filtered = df[(df[x_col] >= time_range[0]) & (df[x_col] <= time_range[1])]
+            all_y_values.extend(df_time_filtered[selected_param].dropna().values)
+    
+    if not all_y_values:
+        st.warning("当前时间区间内无有效参数值，无法设置纵坐标范围")
+        return
+    
+    min_y = min(all_y_values)
+    max_y = max(all_y_values)
+    # 扩展10%的范围作为默认值（避免数据贴边）
+    default_y_min = min_y - (max_y - min_y) * 0.1 if max_y != min_y else min_y - 1
+    default_y_max = max_y + (max_y - min_y) * 0.1 if max_y != min_y else max_y + 1
+    st.session_state.default_y_range = (default_y_min, default_y_max)
+    
+    # 纵坐标区间布局：最小值 + 最大值 + 复位按钮
+    col4, col5, col6 = st.columns([2, 2, 1])
+    with col4:
+        y_min = st.number_input(
+            "数值最小值",
+            value=float(default_y_min),
+            min_value=float(min_y - (max_y - min_y) * 1) if max_y != min_y else min_y - 10,  # 允许扩展1倍范围
+            max_value=float(max_y),
+            step=0.01 if isinstance(default_y_min, float) else 1
+        )
+    with col5:
+        y_max = st.number_input(
+            "数值最大值",
+            value=float(default_y_max),
+            min_value=float(min_y),
+            max_value=float(max_y + (max_y - min_y) * 1) if max_y != min_y else max_y + 10,  # 允许扩展1倍范围
+            step=0.01 if isinstance(default_y_max, float) else 1
+        )
+    with col6:
+        if st.button("🔄 复位数值", type="secondary"):
+            st.experimental_rerun()
+    
+    # 验证纵坐标区间有效性
+    if y_min >= y_max:
+        st.error("数值最小值不能大于等于最大值，请重新设置")
+        return
+    y_range = (y_min, y_max)
+    
+    # 7. 生成并显示图表
     st.markdown("---")
     st.subheader("对比图表")
-    fig = generate_time_series_plot(df_list, file_names, selected_param, x_col, time_range)
+    fig = generate_time_series_plot(df_list, file_names, selected_param, x_col, time_range, y_range)
     
     # 显示图表
     st.pyplot(fig)
     
-    # 7. 下载链接
-    st.markdown(get_download_link(fig, selected_param, time_range), unsafe_allow_html=True)
+    # 8. 下载链接
+    st.markdown(get_download_link(fig, selected_param, time_range, y_range), unsafe_allow_html=True)
     
-    # 8. 数据预览（筛选后的数据）
+    # 9. 数据预览（筛选后的数据）
     st.markdown("---")
-    st.subheader("数据预览（当前时间区间）")
+    st.subheader("数据预览（当前时间+数值区间）")
     tab_list = st.tabs(file_names)
     for idx, tab in enumerate(tab_list):
         with tab:
-            # 显示筛选后的数据
-            df_filtered = df_list[idx][(df_list[idx][x_col] >= time_range[0]) & (df_list[idx][x_col] <= time_range[1])]
+            # 同时筛选时间和数值区间的数据
+            df_filtered = df_list[idx][
+                (df_list[idx][x_col] >= time_range[0]) & 
+                (df_list[idx][x_col] <= time_range[1]) &
+                (df_list[idx][selected_param] >= y_range[0]) &
+                (df_list[idx][selected_param] <= y_range[1])
+            ]
             st.dataframe(df_filtered, use_container_width=True)
 
 if __name__ == "__main__":
