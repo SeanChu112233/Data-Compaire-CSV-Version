@@ -1,399 +1,258 @@
 import streamlit as st
-import numpy as np
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.linear_model import LinearRegression
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.metrics import r2_score, mean_squared_error
-from sklearn.model_selection import cross_val_score, ShuffleSplit
-from mpl_toolkits.mplot3d import Axes3D
-import plotly.graph_objects as go
-import plotly.express as px
+from matplotlib import cm
+from io import BytesIO, StringIO
+import base64
 
-# 设置中文字体
+# 设置matplotlib支持中文
 plt.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC"]
 plt.rcParams["axes.unicode_minus"] = False  # 正确显示负号
 
-# 页面配置
-st.set_page_config(
-    page_title="推出力-温度/时间条件数据分析工具 for Mabel",
-    page_icon="📊",
-    layout="wide"
-)
-
-# 标题和说明
-st.title("📊 推出力-温度/时间条件数据分析工具 for Mabel")
-st.markdown("""
-    该工具用于分析温度(temp)、时间(time)与推出力(force)之间的关系，
-    支持多种回归模型分析，并提供可视化结果。请上传包含相关数据的CSV文件。
-""")
-
-# 侧边栏 - 文件上传和参数设置
-with st.sidebar:
-    st.header("设置")
-    
-    # 文件上传
-    uploaded_file = st.file_uploader("上传CSV数据文件", type=["csv"])
-    
-    # 模型选择
-    model_option = st.selectbox(
-        "选择回归模型",
-        ("随机森林", "梯度提升树", "多项式回归", "线性回归")
-    )
-    
-    # 显示数据信息
-    st.subheader("数据信息")
-    data_info = st.empty()
-
-# 主程序
-def main():
-    # 检查是否上传了文件
-    if uploaded_file is not None:
+def load_data(uploaded_file):
+    """加载CSV数据，尝试多种编码"""
+    encodings = ['utf-8', 'gbk', 'gb2312', 'latin-1']
+    for encoding in encodings:
         try:
-            # 读取CSV文件
-            data = pd.read_csv(uploaded_file)
+            if uploaded_file is not None:
+                string_data = uploaded_file.getvalue().decode(encoding)
+                return pd.read_csv(StringIO(string_data))
+        except UnicodeDecodeError:
+            continue
+    st.error("无法解析CSV文件，请检查文件编码格式")
+    return None
+
+def generate_plot(df, scales, selected_params):
+    """生成3D可交互图表"""
+    # 筛选选中的参数
+    filtered_params = [p for p in df.columns[1:] if p in selected_params]
+    if not filtered_params:
+        st.warning("请至少选择一个参数进行可视化")
+        return None
+        
+    # 第一列为X轴数据（时间）
+    x_data = df.iloc[:, 0].values
+    
+    # 获取参数名称（从第二列开始）并反转顺序
+    reversed_params = list(reversed(filtered_params))  # 反转参数顺序
+    num_params = len(reversed_params)
+    
+    # 创建图形和3D轴
+    fig = plt.figure(figsize=(12, 8))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # 获取颜色映射
+    colors = cm.rainbow(np.linspace(0, 1, num_params))
+    
+    # 绘制每条数据线（使用反转后的参数顺序）
+    for i, param in enumerate(reversed_params):
+        # 获取Y轴位置（均匀分布）
+        y_pos = i
+        
+        # 获取Z轴数据，并应用缩放
+        z_data = df[param].values * scales[param]
+        
+        # 绘制3D线
+        ax.plot(x_data, np.full_like(x_data, y_pos), z_data, 
+                label=param, color=colors[i], linewidth=2)
+    
+    # 设置轴标签
+    ax.set_xlabel(df.columns[0], fontsize=10)  # X轴使用第一列的名称
+    ax.set_zlabel(filtered_params[0], fontsize=10)  # Z轴以第一个选中的参数为准
+    
+    # 设置Y轴刻度和标签（使用反转后的参数顺序）
+    ax.set_yticks(range(num_params))
+    ax.set_yticklabels(reversed_params, fontsize=8)  # 注意这里使用反转后的参数
+    
+    # 添加标题和图例
+    ax.set_title('3D Waterfall compare plot', fontsize=12)
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+    
+    # 调整视角
+    ax.view_init(elev=30, azim=290)
+    
+    # 优化布局
+    plt.tight_layout()
+    
+    return fig
+
+def generate_time_series_plots(df, selected_params, x_range):
+    """生成时间序列对比图，从上到下排列各个参数，不应用缩放"""
+    # 筛选选中的参数
+    filtered_params = [p for p in df.columns[1:] if p in selected_params]
+    if not filtered_params:
+        st.warning("请至少选择一个参数进行可视化")
+        return None
+        
+    # 获取X轴数据和范围
+    x_data = df.iloc[:, 0].values
+    x_label = df.columns[0]
+    
+    # 根据选择的x范围筛选数据
+    mask = (x_data >= x_range[0]) & (x_data <= x_range[1])
+    filtered_x = x_data[mask]
+    
+    # 创建图形
+    num_plots = len(filtered_params)
+    fig, axes = plt.subplots(num_plots, 1, figsize=(12, 4*num_plots), sharex=True)
+    
+    # 确保axes是数组形式（当只有一个参数时）
+    if num_plots == 1:
+        axes = [axes]
+    
+    # 为每个参数创建子图 - 不应用缩放
+    for i, param in enumerate(filtered_params):
+        # 获取原始Y数据（不进行缩放）
+        y_data = df[param].values[mask]
+        
+        # 绘制曲线
+        axes[i].plot(filtered_x, y_data, label=param, linewidth=2)
+        axes[i].set_title(f'{param} ', fontsize=10)
+        axes[i].set_ylabel(f'{param} ()', fontsize=8)
+        axes[i].grid(True, linestyle='--', alpha=0.7)
+        axes[i].legend(fontsize=8)
+    
+    # 设置X轴标签
+    axes[-1].set_xlabel(x_label, fontsize=10)
+    
+    # 调整布局
+    plt.tight_layout()
+    
+    return fig
+
+def get_image_download_link(fig, format='png', prefix='data'):
+    """生成图表下载链接"""
+    buf = BytesIO()
+    fig.savefig(buf, format=format, bbox_inches='tight', dpi=300)
+    buf.seek(0)
+    img_data = buf.getvalue()
+    b64 = base64.b64encode(img_data).decode()
+    return f'<a href="data:image/{format};base64,{b64}" download="{prefix}_plot.{format}">下载图表</a>'
+
+def main():
+    st.title('多参数3D数据对比可视化瀑布图')
+    st.write('上传CSV文件，第一列为X轴数据（如时间），第二列为Z轴基准（如速度），其他列为需要对比的参数。')
+    st.write('您可以调整各参数的缩放比例以获得更好的对比效果，需要其他视角请与我联系。')
+    
+    # 上传文件
+    uploaded_file = st.file_uploader("选择CSV文件", type="csv")
+    
+    if uploaded_file is not None:
+        # 加载数据
+        df = load_data(uploaded_file)
+        
+        if df is not None and not df.empty:
+            # 显示数据预览
+            st.subheader('数据预览')
+            st.dataframe(df.head())
             
-            # 检查必要的列是否存在
-            required_columns = ['temp', 'time', 'force']
-            data.columns = [col.lower() for col in data.columns]  # 转换列名为小写
-            missing = [col for col in required_columns if col not in data.columns]
-            
-            if missing:
-                st.error(f"数据文件缺少必要的列: {', '.join(missing)}")
+            # 检查数据列数
+            if len(df.columns) < 2:
+                st.error("CSV文件至少需要包含两列数据（第一列为X轴，其余为参数）")
                 return
             
-            # 重命名列名，首字母大写
-            data = data.rename(columns={
-                'temp': 'Temp',
-                'time': 'Time',
-                'force': 'Force'
-            })
+            # 初始化缩放比例（以第二列作为基准，缩放比例为1）
+            params = df.columns[1:]
+            initial_scales = {param: 1.0 for param in params}
             
-            # 在侧边栏显示数据信息
-            with st.sidebar:
-                data_info.dataframe(data.describe(), use_container_width=True)
-                st.write(f"数据量: {len(data)} 条")
+            # 如果有多个参数，从会话状态加载或初始化缩放比例
+            if 'scales' not in st.session_state or set(st.session_state.scales.keys()) != set(params):
+                st.session_state.scales = initial_scales
             
-            # 显示原始数据
-            with st.expander("查看原始数据", expanded=False):
-                st.dataframe(data, use_container_width=True)
+            # 初始化参数选择状态
+            if 'selected_params' not in st.session_state or set(st.session_state.selected_params) != set(params):
+                st.session_state.selected_params = list(params)  # 默认全选
             
-            # 训练模型
-            models = train_models(data)
+            # 参数选择
+            st.subheader('参数选择')
+            st.write('选择需要在图表中显示的参数')
+            selected_params = st.multiselect(
+                '选择参数',
+                options=params,
+                default=st.session_state.selected_params
+            )
+            st.session_state.selected_params = selected_params
             
-            # 显示模型评估结果
-            show_model_evaluation(models, data)
+            # 参数缩放控制
+            st.subheader('参数缩放调整')
+            st.write('调整各参数的缩放比例，以便更好地在图表上进行对比（第二列作为基准）')
             
-            # 显示可视化结果
-            show_visualizations(models, data, model_option)
+            # 使用表单组织缩放控件（使用反转后的参数顺序）
+            with st.form("scaling_form"):
+                cols = st.columns(3)  # 使用多列布局
+                reversed_params = list(reversed(params))  # 反转参数顺序
+                for i, param in enumerate(reversed_params):
+                    # 原第二列固定为1.0，作为基准
+                    if param == params[0]:  # 无论顺序如何，始终以原第二列作为基准
+                        st.session_state.scales[param] = 1.0
+                        cols[i % 3].number_input(
+                            f'{param} (基准)', 
+                            value=1.0, 
+                            min_value=0.01, 
+                            max_value=100.0, 
+                            step=0.1,
+                            disabled=True  # 基准参数不可修改
+                        )
+                    else:
+                        st.session_state.scales[param] = cols[i % 3].number_input(
+                            param, 
+                            value=st.session_state.scales[param], 
+                            min_value=0.01, 
+                            max_value=100.0, 
+                            step=0.1
+                        )
+                
+                # 提交按钮
+                submitted = st.form_submit_button('应用缩放')
             
-            # 交互式预测
-            show_prediction_tool(models, data, model_option)
+            # 生成并显示3D图表
+            st.subheader('3D Waterfall plot')
+            fig_3d = generate_plot(df, st.session_state.scales, selected_params)
+            if fig_3d:
+                st.pyplot(fig_3d, use_container_width=True)
+                st.markdown(get_image_download_link(fig_3d, prefix='3d_waterfall'), unsafe_allow_html=True)
             
-        except Exception as e:
-            st.error(f"处理数据时出错: {str(e)}")
-    else:
-        # 显示示例数据
-        st.info("请上传CSV文件开始分析。示例数据格式如下：")
-        sample_data = pd.DataFrame({
-            'temp': [70, 70, 70, 90, 90],
-            'time': [60, 180, 300, 60, 180],
-            'force': [3.4, 3.1, 3.3, 3.1, 2.8]
-        })
-        st.dataframe(sample_data, use_container_width=True)
-
-def train_models(data):
-    """训练所有回归模型"""
-    X = data[['Temp', 'Time']]
-    y = data['Force']
-    
-    models = {}
-    
-    # 1. 线性回归
-    linear_model = LinearRegression()
-    linear_model.fit(X, y)
-    models["线性回归"] = {
-        "model": linear_model,
-        "type": "linear"
-    }
-    
-    # 2. 多项式回归 (二次项)
-    poly = PolynomialFeatures(degree=2, include_bias=False)
-    X_poly = poly.fit_transform(X)
-    poly_model = LinearRegression()
-    poly_model.fit(X_poly, y)
-    models["多项式回归"] = {
-        "model": poly_model,
-        "type": "polynomial",
-        "poly_transform": poly
-    }
-    
-    # 3. 随机森林回归
-    rf_model = RandomForestRegressor(n_estimators=100, random_state=42)
-    rf_model.fit(X, y)
-    models["随机森林"] = {
-        "model": rf_model,
-        "type": "nonlinear"
-    }
-    
-    # 4. 梯度提升树回归
-    gb_model = GradientBoostingRegressor( n_estimators=30,        # 减少树的数量（从100→30）
-    max_depth=3,            # 限制树深度（防止过度分裂）
-    min_samples_leaf=2,     # 增加叶节点最小样本数
-    subsample=0.8,          # 使用80%的样本训练每棵树
-    random_state=42)
-    gb_model.fit(X, y)
-    models["梯度提升树"] = {
-        "model": gb_model,
-        "type": "nonlinear"
-    }
-    
-    # 评估模型
-    cv = ShuffleSplit(n_splits=5, test_size=0.2, random_state=42)
-    for name, model_info in models.items():
-        model = model_info["model"]
-        
-        if model_info["type"] == "polynomial":
-            X_processed = model_info["poly_transform"].transform(X)
-        else:
-            X_processed = X
-        
-        # 计算交叉验证得分
-        cv_scores = cross_val_score(model, X_processed, y, cv=cv, scoring='r2')
-        cv_rmse = cross_val_score(model, X_processed, y, cv=cv, scoring='neg_mean_squared_error')
-        
-        # 计算训练R²和RMSE
-        y_pred = predict_with_model(name, models, X)
-        r2 = r2_score(y, y_pred)
-        rmse = np.sqrt(mean_squared_error(y, y_pred))
-        
-        model_info["cv_r2_mean"] = np.mean(cv_scores)
-        model_info["cv_r2_std"] = np.std(cv_scores)
-        model_info["cv_rmse_mean"] = np.mean(np.sqrt(-cv_rmse))
-        model_info["train_r2"] = r2
-        model_info["train_rmse"] = rmse
-    
-    return models
-
-def predict_with_model(model_name, models, X):
-    """使用指定模型进行预测"""
-    model_info = models[model_name]
-    model = model_info["model"]
-    
-    if model_info["type"] == "polynomial":
-        X_processed = model_info["poly_transform"].transform(X)
-        return model.predict(X_processed)
-    else:
-        return model.predict(X)
-
-def show_model_evaluation(models, data):
-    """显示模型评估结果"""
-    st.subheader("📈 模型评估结果")
-    
-    # 准备评估结果数据
-    eval_data = []
-    for name, info in models.items():
-        eval_data.append({
-            "模型": name,
-            "训练R²": f"{info['train_r2']:.4f}",
-            "交叉验证R²": f"{info['cv_r2_mean']:.4f} ± {info['cv_r2_std']:.4f}",
-            "训练RMSE": f"{info['train_rmse']:.4f}"
-        })
-    
-    eval_df = pd.DataFrame(eval_data)
-    
-    # 找出最佳模型（交叉验证R²最高）
-    best_model = max(models.items(), key=lambda x: x[1]["cv_r2_mean"])[0]
-    
-    # 显示评估表格，突出最佳模型
-    def highlight_best(row):
-        return ['background-color: #90EE90' if row['模型'] == best_model else '' for _ in row]
-    
-    styled_df = eval_df.style.apply(highlight_best, axis=1)
-    st.dataframe(styled_df, use_container_width=True)
-    
-    st.info(f"推荐模型: **{best_model}** (基于交叉验证R²最高)")
-
-def show_visualizations(models, data, model_name):
-    """显示数据可视化结果"""
-    st.subheader("🔍 数据可视化")
-    
-    # 创建网格数据用于绘制曲面
-    x = data['Temp']
-    y = data['Time']
-    z = data['Force']
-    
-    x_range = np.linspace(x.min(), x.max(), 30)
-    y_range = np.linspace(y.min(), y.max(), 30)
-    X_grid, Y_grid = np.meshgrid(x_range, y_range)
-    grid_data = np.column_stack([X_grid.ravel(), Y_grid.ravel()])
-    
-    # 获取模型预测值
-    Z_grid = predict_with_model(model_name, models, grid_data)
-    Z_grid = Z_grid.reshape(X_grid.shape)
-    
-    # 分为两列显示图表
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # 3D散点图和曲面图 (使用plotly)
-        st.subheader(f"3D关系图 ({model_name})")
-        
-        # 创建3D图形
-        fig = go.Figure()
-        
-        # 添加原始数据点
-        fig.add_trace(go.Scatter3d(
-            x=x, y=y, z=z,
-            mode='markers',
-            marker=dict(size=5, color='red'),
-            name='实验数据'
-        ))
-        
-        # 添加预测曲面
-        fig.add_trace(go.Surface(
-            x=X_grid, y=Y_grid, z=Z_grid,
-            opacity=0.6,
-            colorscale='Viridis',
-            name='预测曲面'
-        ))
-        
-        fig.update_layout(
-            scene=dict(
-                xaxis_title='温度 (°C)',
-                yaxis_title='时间 (s)',
-                zaxis_title='推出力'
-            ),
-            height=500
-        )
-        
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        # 热区图
-        st.subheader(f"热区图 ({model_name})")
-        
-        # 创建热区图数据
-        z_dense = Z_grid
-        fig = px.imshow(
-            z_dense,
-            x=x_range,
-            y=y_range,
-            color_continuous_scale='Viridis',
-            aspect='auto',
-            labels=dict(x="温度 (°C)", y="时间 (s)", color="推出力")
-        )
-        
-        # 添加原始数据点
-        fig.add_scatter(x=x, y=y, mode='markers', 
-                       marker=dict(color='red', size=8, line=dict(width=2, color='black')),
-                       name='实验数据')
-        
-        fig.update_layout(height=500)
-        st.plotly_chart(fig, use_container_width=True)
-    
-    # 相关性分析
-    st.subheader("📊 相关性分析")
-    corr = data.corr()
-    fig, ax = plt.subplots(figsize=(8, 6))
-    sns.heatmap(corr, annot=True, cmap='coolwarm', ax=ax)
-    st.pyplot(fig)
-
-def show_prediction_tool(models, data, model_name):
-    """显示交互式预测工具"""
-    st.subheader("🔮 推出力预测")
-    
-    # 获取数据范围
-    temp_min, temp_max = data['Temp'].min(), data['Temp'].max()
-    time_min, time_max = data['Time'].min(), data['Time'].max()
-    
-    # 添加一些缓冲
-    temp_buffer = (temp_max - temp_min) * 0.1
-    time_buffer = (time_max - time_min) * 0.1
-    
-    # 创建输入控件
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        temp = st.slider(
-            "温度 (°C)",
-            min_value=float(temp_min - temp_buffer),
-            max_value=float(temp_max + temp_buffer),
-            value=float(data['Temp'].mean())
-        )
-    
-    with col2:
-        time = st.slider(
-            "时间 (s)",
-            min_value=float(time_min - time_buffer),
-            max_value=float(time_max + time_buffer),
-            value=float(data['Time'].mean())
-        )
-    
-    # 预测推出力
-    X_pred = pd.DataFrame([[temp, time]], columns=['Temp', 'Time'])
-    force_pred = predict_with_model(model_name, models, X_pred)[0]
-    
-    # 显示预测结果
-    st.metric("预测推出力", f"{force_pred:.4f}", delta=None)
-    
-    # 显示模型影响分析
-    st.subheader("📋 影响分析")
-    model_info = models[model_name]
-    
-    if model_name == "线性回归":
-        coefs = model_info["model"].coef_
-        intercept = model_info["model"].intercept_
-        
-        st.latex(f"推出力 = {intercept:.4f} + {coefs[0]:.4f} \\times 温度 + {coefs[1]:.4f} \\times 时间")
-        st.write(f"决定系数 R²: {model_info['train_r2']:.4f}")
-        
-        # 分析影响大小
-        temp_impact = abs(coefs[0])
-        time_impact = abs(coefs[1])
-        
-        if temp_impact > time_impact:
-            st.info(f"温度对推出力的影响更大 (影响比例: {temp_impact/time_impact:.2f}:1)")
-        elif time_impact > temp_impact:
-            st.info(f"时间对推出力的影响更大 (影响比例: 1:{time_impact/temp_impact:.2f})")
-        else:
-            st.info("温度和时间对推出力的影响大致相同")
-    
-    elif model_name == "多项式回归":
-        st.write(f"决定系数 R²: {model_info['train_r2']:.4f}")
-        st.info("模型包含温度、时间的二次项以及交互项，表明它们对推出力的影响是非线性的，在不同范围内影响程度不同")
-    
-    else:  # 随机森林和梯度提升树
-        st.write(f"决定系数 R²: {model_info['train_r2']:.4f}")
-        
-        # 特征重要性
-        importances = model_info["model"].feature_importances_
-        temp_importance = importances[0]
-        time_importance = importances[1]
-        
-        st.write(f"温度特征重要性: {temp_importance:.4f}")
-        st.write(f"时间特征重要性: {time_importance:.4f}")
-        
-        if temp_importance > time_importance:
-            st.info(f"温度对推出力的影响更大 (重要性比例: {temp_importance/time_importance:.2f}:1)")
-        elif time_importance > temp_importance:
-            st.info(f"时间对推出力的影响更大 (重要性比例: 1:{time_importance/temp_importance:.2f})")
-        else:
-            st.info("温度和时间对推出力的影响大致相同")
-
-# 添加页脚信息
-def add_footer():
-    st.markdown("---")
-    st.markdown("""
-    <div style="text-align: center;">
-        <p>团队贡献数据分析工具 | 数据来源于上传的CSV文件</p>
-        <p>© 2023 团队贡献分析项目</p>
-    </div>
-    """, unsafe_allow_html=True)
+            # X轴区间选择（移到瀑布图下方）
+            x_data = df.iloc[:, 0].values
+            x_min, x_max = x_data.min(), x_data.max()
+            
+            # 初始化X轴范围
+            if 'x_range' not in st.session_state:
+                st.session_state.x_range = (x_min, x_max)
+            
+            st.subheader('X轴区间设置')
+            col1, col2 = st.columns(2)
+            with col1:
+                x_start = st.number_input(
+                    '起始值',
+                    value=st.session_state.x_range[0],
+                    min_value=x_min,
+                    max_value=x_max,
+                    step=(x_max - x_min)/100 if x_max != x_min else 1
+                )
+            with col2:
+                x_end = st.number_input(
+                    '结束值',
+                    value=st.session_state.x_range[1],
+                    min_value=x_min,
+                    max_value=x_max,
+                    step=(x_max - x_min)/100 if x_max != x_min else 1
+                )
+            
+            # 确保起始值小于结束值
+            if x_start > x_end:
+                st.error("起始值不能大于结束值")
+                return
+                
+            st.session_state.x_range = (x_start, x_end)
+            
+            # 生成并显示时间序列对比图（不应用缩放）
+            st.subheader('参数时间序列对比图（原始数据）')
+            fig_time_series = generate_time_series_plots(df, selected_params, st.session_state.x_range)
+            if fig_time_series:
+                st.pyplot(fig_time_series, use_container_width=True)
+                st.markdown(get_image_download_link(fig_time_series, prefix='time_series'), unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
-    add_footer()
-    
