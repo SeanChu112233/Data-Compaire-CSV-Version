@@ -250,7 +250,7 @@ def main():
     
     # 7. 生成并显示图表
     st.markdown("---")
-    st.subheader("Compared curve")
+    st.subheader("对比图表")
     fig = generate_time_series_plot(df_list, file_names, selected_param, x_col, time_range, y_range)
     st.pyplot(fig, use_container_width=True)
     
